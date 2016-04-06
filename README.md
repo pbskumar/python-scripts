@@ -1,2 +1,6 @@
 # python-scripts
-A repository for problems solved using Python
+Repository of problems solved using Python
+1. tweetCollector.py - Extracts tweets from Twitter and inserts them into MongoDB
+
+
+
