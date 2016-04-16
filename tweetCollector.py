@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # encoding: utf-8
 
-# to-do
-# hash-tag tweet stream
-
 
 # ############################################################################################
 #
@@ -150,15 +147,20 @@ def retrieve_user_tweet(cursor, api, user_id, since_tweet_id=None):
                 cursor = tweepy.Cursor(api.user_timeline, id=user_id, max_id=max_tweet_id,
                                        since_id=since_tweet_id).items()
             time.sleep(15 * 60)
-        except tweepy.TweepError:
-            print("Tweepy Error. Rate Limit Reached Sleeping")
-            # set max_id for cursor
-            # max_id extracts tweets older than the given max_id
-            if tweet != '':
-                max_tweet_id = tweet._json["id"]
-                cursor = tweepy.Cursor(api.user_timeline, id=user_id, max_id=max_tweet_id,
-                                       since_id=since_tweet_id).items()
-            time.sleep(15 * 60)
+        except tweepy.TweepError as e:
+            if e.args[0][-3:] == '429':
+                print("Tweepy Error. Rate Limit Reached Sleeping")
+                # set max_id for cursor
+                # max_id extracts tweets older than the given max_id
+                if tweet != '':
+                    max_tweet_id = tweet._json["id"]
+                    cursor = tweepy.Cursor(api.user_timeline, id=user_id, max_id=max_tweet_id,
+                                           since_id=since_tweet_id).items()
+                time.sleep(15 * 60)
+            else:
+                print(e.args[0])
+                exit(-1)
+
         except StopIteration:
             print("All tweets of " + user_id + " retrieved.")
             return
@@ -184,6 +186,7 @@ def get_user_tweets(user_id, api, db_reference, db_conf_list):
 
     for doc in latest_tweet_doc:
         latest_tweet_id = doc["id"]
+        break
 
     if latest_tweet_id:
         print("Updating tweets of " + user_id)
@@ -191,7 +194,33 @@ def get_user_tweets(user_id, api, db_reference, db_conf_list):
         print("Extracting tweets from " + user_id + "'s time-line")
 
     for tweet in retrieve_user_tweet(tweepy.Cursor(api.user_timeline, id=user_id, since_id=latest_tweet_id).items(),
-                                     api, user_id, latest_tweet_doc):
+                                     api, user_id, latest_tweet_id):
+        tweet_json = tweet._json
+        db_reference.write_doc_to_collection(db_conf_list[0], db_conf_list[1], tweet_json)
+
+
+def retrieve_search_tweet(cursor):
+    while True:
+        try:
+            yield cursor.next()
+        except tweepy.RateLimitError:
+            print("Limit Reached. Sleeping")
+            time.sleep(15 * 60)
+        except tweepy.TweepError as e:
+            if e.args[0][-3:] == '429':
+                print("Tweepy Error. Rate Limit Reached Sleeping")
+                time.sleep(15 * 60)
+            else:
+                print(e.args[0])
+                exit(-1)
+        except StopIteration:
+            print("All possible tweets retrieved.")
+            return
+    pass
+
+
+def get_tweets_by_keyword(keyword, api, db_reference, db_conf_list):
+    for tweet in retrieve_search_tweet(tweepy.Cursor(api.search, q=keyword).items()):
         tweet_json = tweet._json
         db_reference.write_doc_to_collection(db_conf_list[0], db_conf_list[1], tweet_json)
 
@@ -201,28 +230,28 @@ class DataRetrievalThread(threading.Thread):
     Thread class for retrieving tweets of multiple accounts in parallel
     """
 
-    def __init__(self, api, db_reference, db_conf_list, thread_id, retrieval_function):
+    def __init__(self, api, db_reference, db_conf_list, search_key, retrieval_function):
         """
         Initializes the DataRetrievalThread class
         :param api: Tweepy API Handle
         :param db_reference: MongoServer reference
         :param db_conf_list: List of target database name and collection name.
-        :param thread_id: ID of the thread for identification
+        :param search_key: Keyword for search
         :param retrieval_function: The function which has to be executed in the thread
         """
         threading.Thread.__init__(self)
         self.api = api
         self.db_reference = db_reference
         self.db_conf_list = db_conf_list
-        self.thread_id = thread_id
+        self.search_key = search_key
         self.retrieval_function = retrieval_function
 
     def run(self):
         """
         Starts execution of the thread
         """
-        print("Starting " + self.name + " " + self.thread_id)
-        self.retrieval_function(self.thread_id, self.api, self.db_reference, self.db_conf_list)
+        print("Starting " + self.name + " " + self.search_key)
+        self.retrieval_function(self.search_key, self.api, self.db_reference, self.db_conf_list)
         print("Exiting " + self.name)
 
 
@@ -238,32 +267,21 @@ if __name__ == '__main__':
                                      twitter_access_secret_token)
 
     # Connection string for MongoDB server access
-    mongo_connection_string = 'localhost:27017'
+    mongo_connection_string = ''
+    # mongo_connection_string = 'localhost:27017'
 
     db = MongoServer(mongo_connection_string)
     database_name = 'tweetDB'
 
-  # Use one of the following commented blocks to extract/update tweets
-  
-  # # Extraction/Updation of tweets from a Twitter Account
-  # # Creates a new collection for each User ID and retrieves all available tweets
-  # # If some tweeets of an account already exist in the given collection, 
-  # get_user_tweets() fetches all Tweets which have been added since the last time the user timeline was processed.
-  
-  # target_username = "abc"
-  # get_user_tweets(target_username, tweepy_api, db, [database_name, target_username])
+    # Extraction/Updating of tweets from multiple Twitter time-lines.
+    # Creates a new collection for each User ID and retrieves all available tweets
+    # If some tweeets of an account already exist in the given collection, 
+    # get_user_tweets() fetches all Tweets which have been added since the last time the user timeline was processed.
+    # candidate_usernames = ['SenSanders', 'HillaryClinton', 'realDonaldTrump', 'tedcruz', 'JohnKasich']
+    # thread_list = [None] * len(candidate_usernames)
+    # for index, username in enumerate(candidate_usernames):
+    #     thread_list[index] = DataRetrievalThread(tweepy_api, db, [database_name, username], username,
+    #                                              get_user_tweets)
+    #     thread_list[index].start()
 
-  
-  # # Extraction/Updation of tweets from multiple Twitter time-lines. 
-  # # Creates a new collection for each User ID and retrieves all available tweets
-  # # If some tweeets of an account already exist in the given collection, 
-  # get_user_tweets() fetches all Tweets which have been added since the last time the user timeline was processed.
-  
-  # candidate_usernames = ['abc', 'def', 'ghi', 'pqr', 'xyz'] # List of Twitter usernames
-  # thread_list = [None] * len(candidate_usernames)
-  # for index, username in enumerate(candidate_usernames):
-  #     thread_list[index] = DataRetrievalThread(tweepy_api, db, [database_name, username], username,
-  #                                               get_user_tweets)
-  #     thread_list[index].start()
-
-  db.close_connection()
+    get_tweets_by_keyword("#primary", tweepy_api, db, [database_name, "tweetStream"])
